@@ -6,7 +6,7 @@ import {
   ChevronLeft, Pencil, Crop,
   Eye, EyeOff, Plus, Type, Trash2, Maximize, Undo2, Redo2,
   Lock, Unlock, Download, SlidersHorizontal,
-  Square, Circle, ArrowUpRight, Minus
+  Square, Circle, ArrowUpRight, Minus, Copy
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import JSZip from 'jszip';
@@ -577,6 +577,32 @@ function App() {
     setActiveFrameIndex(frames.length);
   };
 
+  const duplicateFrame = (index: number) => {
+    const storeObj: Record<string, string> = {};
+    layers.forEach(l => {
+      const cvs = canvasRefs.current[l.id];
+      if (cvs) storeObj[l.id] = cvs.toDataURL();
+    });
+
+    setFrames(prev => {
+      const copy = [...prev];
+      // Save current frame state first
+      copy[activeFrameIndex] = { ...copy[activeFrameIndex], layerImages: storeObj };
+
+      const frameToCopy = copy[index];
+      const newFrame = {
+        id: uuidv4(),
+        layerImages: { ...frameToCopy.layerImages }
+      };
+
+      copy.splice(index + 1, 0, newFrame);
+      return copy;
+    });
+
+    // Switch to the newly created frame
+    setTimeout(() => switchFrame(index + 1), 0);
+  };
+
   const addNewLayer = () => {
     const id = `layer-${uuidv4()}`;
     setLayers(prev => [{ id, name: `Layer ${prev.length + 1}`, visible: true, opacity: 100, blendMode: 'normal', alphaLock: false }, ...prev]);
@@ -902,15 +928,27 @@ function App() {
               >
                 <div style={{ width: '100%', height: '100%', backgroundImage: `url(${f.layerImages[layers[0]?.id] || ''})`, backgroundSize: 'cover' }}></div>
                 <span className="frame-number">{i + 1}</span>
-                {frames.length > 1 && activeFrameIndex === i && (
-                  <button
-                    className="btn-icon"
-                    style={{ position: 'absolute', top: '-6px', right: '-6px', background: 'var(--panel-bg)', borderRadius: '50%', padding: '2px', color: 'var(--accent)', border: '1px solid var(--panel-border)' }}
-                    onClick={(e) => { e.stopPropagation(); deleteFrame(i); }}
-                    title="Delete Frame"
-                  >
-                    <Trash2 size={12} />
-                  </button>
+                {activeFrameIndex === i && (
+                  <div style={{ position: 'absolute', top: '-6px', right: '-6px', display: 'flex', gap: '4px' }}>
+                    <button
+                      className="btn-icon"
+                      style={{ background: 'var(--panel-bg)', borderRadius: '50%', padding: '2px', color: 'var(--accent)', border: '1px solid var(--panel-border)' }}
+                      onClick={(e) => { e.stopPropagation(); duplicateFrame(i); }}
+                      title="Duplicate Frame"
+                    >
+                      <Copy size={12} />
+                    </button>
+                    {frames.length > 1 && (
+                      <button
+                        className="btn-icon"
+                        style={{ background: 'var(--panel-bg)', borderRadius: '50%', padding: '2px', color: 'var(--accent)', border: '1px solid var(--panel-border)' }}
+                        onClick={(e) => { e.stopPropagation(); deleteFrame(i); }}
+                        title="Delete Frame"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             ))}
