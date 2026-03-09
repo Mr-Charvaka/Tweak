@@ -93,6 +93,8 @@ function App() {
   ]);
   const [activeFrameIndex, setActiveFrameIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [onionSkinEnabled, setOnionSkinEnabled] = useState(false);
+  const [fps, setFps] = useState(12);
   const [textInput, setTextInput] = useState<{ x: number, y: number, value: string, fontSize: number } | null>(null);
 
   // Undo / Redo Stacks (storing the entire frames array as a JSON string or simplified structure)
@@ -235,12 +237,12 @@ function App() {
         let nextIndex = activeFrameIndex + 1;
         if (nextIndex >= frames.length) nextIndex = 0;
         switchFrame(nextIndex);
-      }, 1000 / 12);
+      }, 1000 / fps);
     } else {
       if (playTimer.current) clearInterval(playTimer.current);
     }
     return () => { if (playTimer.current) clearInterval(playTimer.current); }
-  }, [isPlaying, activeFrameIndex, frames, switchFrame]);
+  }, [isPlaying, activeFrameIndex, frames, switchFrame, fps]);
 
   useEffect(() => {
     if (frames.length === 1 && Object.keys(frames[0].layerImages).length === 0) {
@@ -320,7 +322,7 @@ function App() {
     img.src = data;
   };
 
-  const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
+  const handlePointerDown = (e: React.MouseEvent | React.TouchEvent | React.PointerEvent) => {
     const isMiddleClick = 'button' in e && e.button === 1;
 
     if (textInput && activeTool !== 'text') stampText();
@@ -379,6 +381,8 @@ function App() {
     const rect = cvs.getBoundingClientRect();
     const point = getCanvasPoint(e, rect);
 
+    const pressure = ('pressure' in e && (e as React.PointerEvent).pressure > 0) ? (e as React.PointerEvent).pressure : 0.5;
+
     setIsDrawing(true);
     setLastPos(point);
 
@@ -387,14 +391,23 @@ function App() {
     const ctx = cvs.getContext('2d');
     if (ctx) {
       setContextDefaults(ctx, activeTool);
-      ctx.beginPath();
-      ctx.moveTo(point.x, point.y);
-      ctx.lineTo(point.x + 0.1, point.y + 0.1);
-      ctx.stroke();
+
+      // We will use native arc stamping for Brush to support pressure changing dynamically
+      if (activeTool === 'brush' || activeTool === 'pencil') {
+        ctx.beginPath();
+        const r = (activeTool === 'brush' ? toolSize / 2 : Math.max(0.5, toolSize / 6));
+        ctx.arc(point.x, point.y, r * (pressure * 2), 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(point.x, point.y);
+        ctx.lineTo(point.x + 0.1, point.y + 0.1);
+        ctx.stroke();
+      }
     }
   };
 
-  const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
+  const handlePointerMove = (e: React.MouseEvent | React.TouchEvent | React.PointerEvent) => {
     const isMiddleClick = 'buttons' in e && e.buttons === 4;
     if ((activeTool === 'select' && ('buttons' in e && e.buttons === 1)) || isMiddleClick || ('touches' in e && e.touches.length > 1)) {
       let clientX, clientY;
@@ -422,8 +435,10 @@ function App() {
     const ctx = cvs.getContext('2d');
 
     if (ctx) {
+      const pressure = ('pressure' in e && (e as React.PointerEvent).pressure > 0) ? (e as React.PointerEvent).pressure : 0.5;
+
       if (activeTool === 'smudge') {
-        const radius = Math.max(2, toolSize);
+        const radius = Math.max(2, toolSize) * (pressure * 1.5);
         ctx.globalAlpha = (toolOpacity / 100) * 0.4;
         // check lock
         const locked = layers.find(l => l.id === activeLayerId)?.alphaLock;
@@ -436,6 +451,22 @@ function App() {
         );
 
         ctx.globalAlpha = 1.0;
+      } else if (activeTool === 'brush' || activeTool === 'pencil') {
+        setContextDefaults(ctx, activeTool);
+        const r = (activeTool === 'brush' ? toolSize / 2 : Math.max(0.5, toolSize / 6));
+        const adjustedRadius = r * (pressure * 2);
+
+        // Interpolate steps to form a continuous line
+        const dx = point.x - lastPos.x;
+        const dy = point.y - lastPos.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const steps = Math.max(1, Math.floor(dist / (adjustedRadius * 0.5)));
+
+        for (let i = 0; i < steps; i++) {
+          ctx.beginPath();
+          ctx.arc(lastPos.x + dx * (i / steps), lastPos.y + dy * (i / steps), adjustedRadius, 0, Math.PI * 2);
+          ctx.fill();
+        }
       } else {
         setContextDefaults(ctx, activeTool);
         ctx.beginPath();
@@ -627,6 +658,23 @@ function App() {
               boxShadow: 'var(--shadow-md)',
             }}
           >
+            {/* Onion Skin Background Layer */}
+            {onionSkinEnabled && activeFrameIndex > 0 && (
+              <div
+                style={{
+                  position: 'absolute', top: 0, left: 0,
+                  width: canvasWidth, height: canvasHeight,
+                  opacity: 0.35, pointerEvents: 'none', mixBlendMode: 'multiply'
+                }}
+              >
+                {[...layers].reverse().map(l => {
+                  if (!l.visible || l.name === 'Background') return null;
+                  const imgData = frames[activeFrameIndex - 1]?.layerImages[l.id];
+                  return imgData ? <img key={`onion-${l.id}`} src={imgData} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} /> : null;
+                })}
+              </div>
+            )}
+
             {/* Canvas Layers */}
             {[...layers].reverse().map((layer) => (
               <canvas
@@ -699,6 +747,10 @@ function App() {
         <motion.div className="timeline-panel" initial={{ y: 150 }} animate={{ y: 0 }} transition={{ delay: 0.1 }}>
           <div className="timeline-header">
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button className={`btn-icon ${onionSkinEnabled ? 'active' : ''}`} onClick={() => setOnionSkinEnabled(!onionSkinEnabled)} title="Toggle Onion Skinning">
+                <Eye size={16} style={{ color: onionSkinEnabled ? 'var(--accent)' : 'inherit' }} />
+              </button>
+              <div style={{ width: '1px', height: '16px', background: 'var(--panel-border)', margin: '0 4px' }} />
               <button className="btn-icon" onClick={() => {
                 let target = activeFrameIndex - 1;
                 if (target < 0) target = frames.length - 1;
@@ -712,7 +764,9 @@ function App() {
                 if (target >= frames.length) target = 0;
                 switchFrame(target);
               }}><ChevronRight size={16} /></button>
-              <span style={{ marginLeft: '12px', fontFamily: 'monospace' }}>12 fps</span>
+              <span style={{ marginLeft: '12px', fontFamily: 'monospace' }}>
+                <input type="number" value={fps} onChange={(e) => setFps(Math.max(1, parseInt(e.target.value) || 1))} style={{ width: '40px', background: 'transparent', color: 'white', border: 'none', textAlign: 'right' }} /> fps
+              </span>
             </div>
             <div>
               <button className="styled-btn" style={{ padding: '4px 12px' }} onClick={addNewFrame}><Plus size={14} style={{ display: 'inline', verticalAlign: 'middle' }} /> Frame</button>
