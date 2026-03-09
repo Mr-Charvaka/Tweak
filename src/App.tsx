@@ -5,7 +5,8 @@ import {
   Droplet, Play, Pause, ChevronRight,
   ChevronLeft, Pencil, Crop,
   Eye, EyeOff, Plus, Type, Trash2, Maximize, Undo2, Redo2,
-  Lock, Unlock, Download, SlidersHorizontal
+  Lock, Unlock, Download, SlidersHorizontal,
+  Square, Circle, ArrowUpRight, Minus
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import JSZip from 'jszip';
@@ -108,6 +109,7 @@ function App() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [scale, setScale] = useState(1);
   const [lastPos, setLastPos] = useState({ x: 0, y: 0 });
+  const [currentPos, setCurrentPos] = useState({ x: 0, y: 0 });
 
   const canvasWidth = 1280;
   const canvasHeight = 720;
@@ -169,17 +171,15 @@ function App() {
     const targetLayer = layers.find(l => l.id === activeLayerId);
     const locked = targetLayer?.alphaLock;
 
-    const r = parseInt(toolColor.slice(1, 3), 16) || 255;
-    const g = parseInt(toolColor.slice(3, 5), 16) || 45;
-    const b = parseInt(toolColor.slice(5, 7), 16) || 85;
-    let rgbaStr = `rgba(${r}, ${g}, ${b}, ${toolOpacity / 100})`;
+    const r = parseInt(toolColor.slice(1, 3), 16);
+    const g = parseInt(toolColor.slice(3, 5), 16);
+    const b = parseInt(toolColor.slice(5, 7), 16);
+    let rgbaStr = `rgba(${isNaN(r) ? 255 : r}, ${isNaN(g) ? 45 : g}, ${isNaN(b) ? 85 : b}, ${toolOpacity / 100})`;
 
+    ctx.fillStyle = rgbaStr;
     if (tool === 'eraser') {
       ctx.globalCompositeOperation = locked ? 'source-atop' : 'destination-out';
       ctx.lineWidth = Math.max(2, toolSize * 2);
-      // If locked, erasing should theoretically paint with transparent pixels, 
-      // but standard standard destination-out doesn't work well with lock.
-      // So if locked, we don't erase (or we paint 0 alpha)
       ctx.strokeStyle = `rgba(0,0,0,${locked ? 0 : (toolOpacity / 100)})`;
     } else if (tool === 'pencil') {
       ctx.globalCompositeOperation = locked ? 'source-atop' : 'source-over';
@@ -432,6 +432,10 @@ function App() {
 
     const rect = cvs.getBoundingClientRect();
     const point = getCanvasPoint(e, rect);
+    setCurrentPos(point);
+
+    if (activeTool === 'smudge' || ['rect', 'circle', 'arrow', 'line'].includes(activeTool)) return;
+
     const ctx = cvs.getContext('2d');
 
     if (ctx) {
@@ -465,6 +469,7 @@ function App() {
         for (let i = 0; i < steps; i++) {
           ctx.beginPath();
           ctx.arc(lastPos.x + dx * (i / steps), lastPos.y + dy * (i / steps), adjustedRadius, 0, Math.PI * 2);
+          ctx.fillStyle = ctx.strokeStyle; // Ensure fillStyle is set for fill operation
           ctx.fill();
         }
       } else {
@@ -480,6 +485,40 @@ function App() {
 
   const handlePointerUp = () => {
     if (isDrawing) {
+      if (['rect', 'circle', 'arrow', 'line'].includes(activeTool)) {
+        const cvs = canvasRefs.current[activeLayerId];
+        if (cvs && lastPos && currentPos) {
+          const ctx = cvs.getContext('2d');
+          if (ctx) {
+            setContextDefaults(ctx, activeTool);
+            ctx.beginPath();
+            if (activeTool === 'rect') {
+              ctx.rect(lastPos.x, lastPos.y, currentPos.x - lastPos.x, currentPos.y - lastPos.y);
+              ctx.stroke();
+            } else if (activeTool === 'circle') {
+              const rx = (currentPos.x - lastPos.x) / 2;
+              const ry = (currentPos.y - lastPos.y) / 2;
+              ctx.ellipse(lastPos.x + rx, lastPos.y + ry, Math.abs(rx), Math.abs(ry), 0, 0, Math.PI * 2);
+              ctx.stroke();
+            } else if (activeTool === 'line') {
+              ctx.moveTo(lastPos.x, lastPos.y);
+              ctx.lineTo(currentPos.x, currentPos.y);
+              ctx.stroke();
+            } else if (activeTool === 'arrow') {
+              const headlen = Math.max(10, toolSize * 2);
+              const dx = currentPos.x - lastPos.x;
+              const dy = currentPos.y - lastPos.y;
+              const angle = Math.atan2(dy, dx);
+              ctx.moveTo(lastPos.x, lastPos.y);
+              ctx.lineTo(currentPos.x, currentPos.y);
+              ctx.lineTo(currentPos.x - headlen * Math.cos(angle - Math.PI / 6), currentPos.y - headlen * Math.sin(angle - Math.PI / 6));
+              ctx.moveTo(currentPos.x, currentPos.y);
+              ctx.lineTo(currentPos.x - headlen * Math.cos(angle + Math.PI / 6), currentPos.y - headlen * Math.sin(angle + Math.PI / 6));
+              ctx.stroke();
+            }
+          }
+        }
+      }
       setIsDrawing(false);
       saveHistoryState();
     }
@@ -503,19 +542,39 @@ function App() {
       if (cvs) storeObj[l.id] = cvs.toDataURL();
     });
 
-    setFrames(prev => {
-      let f = [...prev];
-      f[activeFrameIndex] = { ...f[activeFrameIndex], layerImages: storeObj };
-      return f;
-    });
-
     const freshImageRefs: Record<string, string> = {};
     const bgUrl = storeObj[layers.find(l => l.name === 'Background')?.id || ''];
     if (bgUrl) freshImageRefs[layers.find(l => l.name === 'Background')!.id] = bgUrl;
 
-    const newIndex = frames.length;
-    setFrames(prev => [...prev, { id: uuidv4(), layerImages: freshImageRefs }]);
-    switchFrame(newIndex);
+    const newFrameObj = { id: uuidv4(), layerImages: freshImageRefs };
+
+    setFrames(prev => {
+      const copy = [...prev];
+      copy[activeFrameIndex] = { ...copy[activeFrameIndex], layerImages: storeObj };
+      copy.push(newFrameObj);
+      return copy;
+    });
+
+    layers.forEach(l => {
+      const cvs = canvasRefs.current[l.id];
+      if (cvs) {
+        const ctx = cvs.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+          const sourceUrl = freshImageRefs[l.id];
+          if (sourceUrl) {
+            const img = new Image();
+            img.onload = () => ctx.drawImage(img, 0, 0);
+            img.src = sourceUrl;
+          } else if (l.name === 'Background') {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+          }
+        }
+      }
+    });
+
+    setActiveFrameIndex(frames.length);
   };
 
   const addNewLayer = () => {
@@ -630,15 +689,15 @@ function App() {
         <ToolButton icon={<Pencil />} id="pencil" active={activeTool} set={setActiveTool} title="Pencil" />
         <ToolButton icon={<Eraser />} id="eraser" active={activeTool} set={setActiveTool} title="Eraser" />
         <ToolButton icon={<Droplet />} id="smudge" active={activeTool} set={setActiveTool} title="Smudge Canvas" />
+        <ToolButton icon={<Square />} id="rect" active={activeTool} set={setActiveTool} title="Rectangle Shape" />
+        <ToolButton icon={<Circle />} id="circle" active={activeTool} set={setActiveTool} title="Circle Shape" />
+        <ToolButton icon={<Minus />} id="line" active={activeTool} set={setActiveTool} title="Line Tool" />
+        <ToolButton icon={<ArrowUpRight />} id="arrow" active={activeTool} set={setActiveTool} title="Arrow Line" />
         <ToolButton icon={<Type />} id="text" active={activeTool} set={setActiveTool} title="Text (Click on Canvas)" />
         <ToolButton icon={<SlidersHorizontal />} id="blur" active={activeTool} set={setActiveTool} title="Apply Filter (Gaussian Blur)" />
         <ToolButton icon={<Crop />} id="crop" active={activeTool} set={setActiveTool} title="Clear Active Layer" />
 
         <div style={{ flex: 1 }} />
-
-        <div className="color-btn" style={{ marginBottom: '16px', backgroundColor: toolColor }}>
-          <input type="color" value={toolColor} onChange={(e) => setToolColor(e.target.value)} />
-        </div>
 
         <button className="btn-icon" style={{ marginBottom: '20px' }} onClick={() => { setPan({ x: 0, y: 0 }); setScale(1); }}>
           <Maximize size={22} />
@@ -698,7 +757,7 @@ function App() {
             }}
           >
             {/* Onion Skin Background Layer */}
-            {onionSkinEnabled && activeFrameIndex > 0 && (
+            {onionSkinEnabled && frames.length > 1 && (
               <div
                 style={{
                   position: 'absolute', top: 0, left: 0,
@@ -709,7 +768,8 @@ function App() {
               >
                 {[...layers].reverse().map(l => {
                   if (!l.visible || l.name === 'Background') return null;
-                  const imgData = frames[activeFrameIndex - 1]?.layerImages[l.id];
+                  const prevIndex = activeFrameIndex === 0 ? frames.length - 1 : activeFrameIndex - 1;
+                  const imgData = frames[prevIndex]?.layerImages[l.id];
                   return imgData ? <img key={`onion-${l.id}`} src={imgData} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} /> : null;
                 })}
               </div>
@@ -745,6 +805,26 @@ function App() {
               onPointerUp={handlePointerUp}
               onPointerLeave={handlePointerUp}
             />
+
+            {/* Live SVG Preview for Shapes */}
+            {isDrawing && ['rect', 'circle', 'arrow', 'line'].includes(activeTool) && (
+              <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 10 }}>
+                <g stroke={toolColor} strokeWidth={toolSize} strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={toolOpacity / 100}>
+                  {activeTool === 'rect' && (
+                    <rect x={Math.min(lastPos.x, currentPos.x)} y={Math.min(lastPos.y, currentPos.y)} width={Math.abs(currentPos.x - lastPos.x)} height={Math.abs(currentPos.y - lastPos.y)} />
+                  )}
+                  {activeTool === 'circle' && (
+                    <ellipse cx={lastPos.x + (currentPos.x - lastPos.x) / 2} cy={lastPos.y + (currentPos.y - lastPos.y) / 2} rx={Math.abs(currentPos.x - lastPos.x) / 2} ry={Math.abs(currentPos.y - lastPos.y) / 2} />
+                  )}
+                  {activeTool === 'line' && (
+                    <line x1={lastPos.x} y1={lastPos.y} x2={currentPos.x} y2={currentPos.y} />
+                  )}
+                  {activeTool === 'arrow' && (
+                    <path d={`M ${lastPos.x} ${lastPos.y} L ${currentPos.x} ${currentPos.y} L ${currentPos.x - Math.max(10, toolSize * 2) * Math.cos(Math.atan2(currentPos.y - lastPos.y, currentPos.x - lastPos.x) - Math.PI / 6)} ${currentPos.y - Math.max(10, toolSize * 2) * Math.sin(Math.atan2(currentPos.y - lastPos.y, currentPos.x - lastPos.x) - Math.PI / 6)} M ${currentPos.x} ${currentPos.y} L ${currentPos.x - Math.max(10, toolSize * 2) * Math.cos(Math.atan2(currentPos.y - lastPos.y, currentPos.x - lastPos.x) + Math.PI / 6)} ${currentPos.y - Math.max(10, toolSize * 2) * Math.sin(Math.atan2(currentPos.y - lastPos.y, currentPos.x - lastPos.x) + Math.PI / 6)}`} />
+                  )}
+                </g>
+              </svg>
+            )}
 
             {textInput && (
               <div
