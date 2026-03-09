@@ -4,9 +4,12 @@ import {
   MousePointer2, Brush, Eraser,
   Droplet, Play, Pause, ChevronRight,
   ChevronLeft, Pencil, Crop,
-  Eye, EyeOff, Plus, Type, Trash2, Maximize, Undo2, Redo2
+  Eye, EyeOff, Plus, Type, Trash2, Maximize, Undo2, Redo2,
+  Lock, Unlock, Download, SlidersHorizontal
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
+import JSZip from 'jszip';
+import { saveAs } from 'file-saver';
 import './index.css';
 
 interface Layer {
@@ -15,6 +18,7 @@ interface Layer {
   visible: boolean;
   opacity: number;
   blendMode: any;
+  alphaLock: boolean;
 }
 
 interface FrameData {
@@ -78,9 +82,9 @@ function App() {
   const [toolColor, setToolColor] = useState('#ff2d55');
 
   const [layers, setLayers] = useState<Layer[]>([
-    { id: 'layer-3', name: 'Inks', visible: true, opacity: 100, blendMode: 'normal' },
-    { id: 'layer-2', name: 'Sketch', visible: true, opacity: 50, blendMode: 'multiply' },
-    { id: 'layer-1', name: 'Background', visible: true, opacity: 100, blendMode: 'normal' }
+    { id: 'layer-3', name: 'Inks', visible: true, opacity: 100, blendMode: 'normal', alphaLock: false },
+    { id: 'layer-2', name: 'Sketch', visible: true, opacity: 50, blendMode: 'multiply', alphaLock: false },
+    { id: 'layer-1', name: 'Background', visible: true, opacity: 100, blendMode: 'normal', alphaLock: false }
   ]);
   const [activeLayerId, setActiveLayerId] = useState('layer-3');
 
@@ -90,6 +94,10 @@ function App() {
   const [activeFrameIndex, setActiveFrameIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [textInput, setTextInput] = useState<{ x: number, y: number, value: string, fontSize: number } | null>(null);
+
+  // Undo / Redo Stacks (storing the entire frames array as a JSON string or simplified structure)
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
 
   // Rendering & Interaction state
   const canvasRefs = useRef<Record<string, HTMLCanvasElement | null>>({});
@@ -103,42 +111,90 @@ function App() {
   const canvasHeight = 720;
   const playTimer = useRef<number | null>(null);
 
-  // Update internal canvas rendering contexts
+  const saveHistoryState = useCallback(() => {
+    const storeObj: Record<string, string> = {};
+    layers.forEach(l => {
+      const cvs = canvasRefs.current[l.id];
+      if (cvs) storeObj[l.id] = cvs.toDataURL();
+    });
+
+    const currentFrames = [...frames];
+    currentFrames[activeFrameIndex] = { ...currentFrames[activeFrameIndex], layerImages: storeObj };
+
+    const snapshot = JSON.stringify(currentFrames);
+
+    setHistory(prev => {
+      const next = prev.slice(0, historyIndex + 1);
+      next.push(snapshot);
+      // keep limit to 20 for memory
+      if (next.length > 20) next.shift();
+      return next;
+    });
+    setHistoryIndex(prev => Math.min(prev + 1, 19));
+  }, [frames, layers, activeFrameIndex, historyIndex]);
+
+  const restoreHistory = (index: number) => {
+    if (index < 0 || index >= history.length) return;
+    try {
+      const payload: FrameData[] = JSON.parse(history[index]);
+      setFrames(payload);
+
+      // Fast render the new state onto canvases
+      const frame = payload[activeFrameIndex];
+      if (frame) {
+        layers.forEach(l => {
+          const cvs = canvasRefs.current[l.id];
+          const ctx = cvs?.getContext('2d');
+          if (ctx && cvs) {
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+            if (frame.layerImages[l.id]) {
+              const img = new Image();
+              img.onload = () => ctx.drawImage(img, 0, 0);
+              img.src = frame.layerImages[l.id];
+            }
+          }
+        });
+      }
+      setHistoryIndex(index);
+    } catch (e) { console.error(e); }
+  };
+
   const setContextDefaults = (ctx: CanvasRenderingContext2D, tool: string) => {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
-    // Parse Hex color for proper Alpha RGBA
+    // Check Alpha Lock
+    const targetLayer = layers.find(l => l.id === activeLayerId);
+    const locked = targetLayer?.alphaLock;
+
     const r = parseInt(toolColor.slice(1, 3), 16) || 255;
     const g = parseInt(toolColor.slice(3, 5), 16) || 45;
     const b = parseInt(toolColor.slice(5, 7), 16) || 85;
     let rgbaStr = `rgba(${r}, ${g}, ${b}, ${toolOpacity / 100})`;
 
     if (tool === 'eraser') {
-      ctx.globalCompositeOperation = 'destination-out';
+      ctx.globalCompositeOperation = locked ? 'source-atop' : 'destination-out';
       ctx.lineWidth = Math.max(2, toolSize * 2);
-      ctx.strokeStyle = `rgba(0,0,0,${toolOpacity / 100})`;
+      // If locked, erasing should theoretically paint with transparent pixels, 
+      // but standard standard destination-out doesn't work well with lock.
+      // So if locked, we don't erase (or we paint 0 alpha)
+      ctx.strokeStyle = `rgba(0,0,0,${locked ? 0 : (toolOpacity / 100)})`;
     } else if (tool === 'pencil') {
-      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalCompositeOperation = locked ? 'source-atop' : 'source-over';
       ctx.lineWidth = Math.max(1, toolSize / 3);
       ctx.strokeStyle = rgbaStr;
     } else {
-      // Basic Brush
-      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalCompositeOperation = locked ? 'source-atop' : 'source-over';
       ctx.lineWidth = toolSize;
       ctx.strokeStyle = rgbaStr;
     }
   };
 
-  // Switch Frames: Save current to store, Load new from store
   const switchFrame = useCallback((newIndex: number) => {
-    // 1. Save
     const storeObj: Record<string, string> = {};
     layers.forEach(l => {
       const cvs = canvasRefs.current[l.id];
-      if (cvs) {
-        storeObj[l.id] = cvs.toDataURL();
-      }
+      if (cvs) storeObj[l.id] = cvs.toDataURL();
     });
 
     setFrames(prev => {
@@ -147,7 +203,6 @@ function App() {
       return copy;
     });
 
-    // 2. Load
     const newFrame = frames[newIndex];
     if (newFrame) {
       layers.forEach(l => {
@@ -158,15 +213,11 @@ function App() {
             ctx.clearRect(0, 0, canvasWidth, canvasHeight);
             const sourceUrl = newFrame.layerImages?.[l.id];
 
-            // if we have image history, paint it
             if (sourceUrl) {
               const img = new Image();
-              img.onload = () => {
-                ctx.drawImage(img, 0, 0);
-              };
+              img.onload = () => ctx.drawImage(img, 0, 0);
               img.src = sourceUrl;
             } else if (l.name === 'Background') {
-              // Fill background on new frames if it was marked as background
               ctx.fillStyle = '#ffffff';
               ctx.fillRect(0, 0, canvasWidth, canvasHeight);
             }
@@ -178,21 +229,19 @@ function App() {
     setActiveFrameIndex(newIndex);
   }, [layers, activeFrameIndex, frames]);
 
-  // Handle Playback Loop
   useEffect(() => {
     if (isPlaying) {
       playTimer.current = window.setInterval(() => {
         let nextIndex = activeFrameIndex + 1;
-        if (nextIndex >= frames.length) nextIndex = 0; // Loop
+        if (nextIndex >= frames.length) nextIndex = 0;
         switchFrame(nextIndex);
-      }, 1000 / 12); // 12 FPS
+      }, 1000 / 12);
     } else {
       if (playTimer.current) clearInterval(playTimer.current);
     }
     return () => { if (playTimer.current) clearInterval(playTimer.current); }
   }, [isPlaying, activeFrameIndex, frames, switchFrame]);
 
-  // Initial setup: ensure background is painted initially
   useEffect(() => {
     if (frames.length === 1 && Object.keys(frames[0].layerImages).length === 0) {
       layers.forEach(l => {
@@ -207,7 +256,10 @@ function App() {
           }
         }
       });
+      // push initial history
+      saveHistoryState();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const getCanvasPoint = (e: React.MouseEvent | React.TouchEvent | MouseEvent | TouchEvent, rect: DOMRect) => {
@@ -244,17 +296,34 @@ function App() {
 
         ctx.textBaseline = 'top';
         ctx.fillText(textInput.value, textInput.x + 2, textInput.y + 2);
+        saveHistoryState();
       }
     }
     setTextInput(null);
   };
 
+  const applyBlur = () => {
+    const cvs = canvasRefs.current[activeLayerId];
+    if (!cvs) return;
+    const ctx = cvs.getContext('2d');
+    if (!ctx) return;
+    const data = cvs.toDataURL();
+    const img = new Image();
+    img.onload = () => {
+      ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.filter = `blur(${Math.max(2, toolSize / 2)}px)`;
+      ctx.drawImage(img, 0, 0);
+      ctx.filter = 'none';
+      saveHistoryState();
+    };
+    img.src = data;
+  };
+
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
     const isMiddleClick = 'button' in e && e.button === 1;
 
-    if (textInput && activeTool !== 'text') {
-      stampText();
-    }
+    if (textInput && activeTool !== 'text') stampText();
 
     if (activeTool === 'select' || isMiddleClick) {
       let clientX, clientY;
@@ -272,11 +341,20 @@ function App() {
 
     if (isPlaying) setIsPlaying(false);
 
+    if (activeTool === 'blur') {
+      applyBlur();
+      setActiveTool('brush'); // switch back after action
+      return;
+    }
+
     if (activeTool === 'crop') {
       const cvs = canvasRefs.current[activeLayerId];
       if (cvs) {
         const ctx = cvs.getContext('2d');
-        if (ctx) ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+        if (ctx) {
+          ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+          saveHistoryState();
+        }
       }
       return;
     }
@@ -292,7 +370,6 @@ function App() {
       return;
     }
 
-    // Default Drawing
     const targetLayer = layers.find(l => l.id === activeLayerId);
     if (!targetLayer || !targetLayer.visible) return;
 
@@ -305,7 +382,6 @@ function App() {
     setIsDrawing(true);
     setLastPos(point);
 
-    // For smudge, we don't draw an initial dot, as we need motion
     if (activeTool === 'smudge') return;
 
     const ctx = cvs.getContext('2d');
@@ -320,7 +396,6 @@ function App() {
 
   const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
     const isMiddleClick = 'buttons' in e && e.buttons === 4;
-    // Panning overrides
     if ((activeTool === 'select' && ('buttons' in e && e.buttons === 1)) || isMiddleClick || ('touches' in e && e.touches.length > 1)) {
       let clientX, clientY;
       if ('touches' in e) {
@@ -349,9 +424,10 @@ function App() {
     if (ctx) {
       if (activeTool === 'smudge') {
         const radius = Math.max(2, toolSize);
-        // Drag underlying pixels by compositing existing pixels at low alpha
         ctx.globalAlpha = (toolOpacity / 100) * 0.4;
-        ctx.globalCompositeOperation = 'source-over';
+        // check lock
+        const locked = layers.find(l => l.id === activeLayerId)?.alphaLock;
+        ctx.globalCompositeOperation = locked ? 'source-atop' : 'source-over';
 
         ctx.drawImage(
           cvs,
@@ -371,7 +447,12 @@ function App() {
     }
   };
 
-  const handlePointerUp = () => setIsDrawing(false);
+  const handlePointerUp = () => {
+    if (isDrawing) {
+      setIsDrawing(false);
+      saveHistoryState();
+    }
+  };
 
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
@@ -408,7 +489,7 @@ function App() {
 
   const addNewLayer = () => {
     const id = `layer-${uuidv4()}`;
-    setLayers(prev => [{ id, name: `Layer ${prev.length + 1}`, visible: true, opacity: 100, blendMode: 'normal' }, ...prev]);
+    setLayers(prev => [{ id, name: `Layer ${prev.length + 1}`, visible: true, opacity: 100, blendMode: 'normal', alphaLock: false }, ...prev]);
     setActiveLayerId(id);
   };
 
@@ -416,6 +497,47 @@ function App() {
     if (layers.length <= 1) return;
     setLayers(prev => prev.filter(l => l.id !== id));
     if (activeLayerId === id) setActiveLayerId(layers[0].id);
+  };
+
+  // Full native ZIP Export implementation!
+  const exportProject = async () => {
+    const zip = new JSZip();
+    zip.file("project.meta.json", JSON.stringify({ version: "1.0", layers: layers.map(l => ({ name: l.name, opacity: l.opacity, blend: l.blendMode })) }));
+
+    // Convert active visual canvas tree to single PNG snapshot
+    const flattened = document.createElement("canvas");
+    flattened.width = canvasWidth;
+    flattened.height = canvasHeight;
+    const flatCtx = flattened.getContext('2d');
+
+    if (flatCtx) {
+      // composite backward, bottoms up
+      const reversed = [...layers].reverse();
+      for (const l of reversed) {
+        if (!l.visible) continue;
+        const cvs = canvasRefs.current[l.id];
+        if (cvs) {
+          flatCtx.globalAlpha = l.opacity / 100;
+          flatCtx.globalCompositeOperation = l.blendMode || 'source-over';
+          flatCtx.drawImage(cvs, 0, 0);
+        }
+      }
+
+      const blob = await new Promise<Blob | null>(res => flattened.toBlob(res));
+      if (blob) zip.file("Export_Result.png", blob);
+    }
+
+    // Export raw frames data directly
+    const framesFolder = zip.folder("Frames");
+    for (let i = 0; i < frames.length; i++) {
+      // Just writing raw dataUrls as text, normally we'd write to actual PNG blobs per frame per layer
+      // But for robust zipper, we'll write base64 raw to text for importing structure
+      framesFolder?.file(`frame_${i}.json`, JSON.stringify(frames[i]));
+    }
+
+    zip.generateAsync({ type: "blob" }).then(function (content) {
+      saveAs(content, "Tweak_Project_Export.zip");
+    });
   };
 
   return (
@@ -439,11 +561,11 @@ function App() {
         <ToolButton icon={<Eraser />} id="eraser" active={activeTool} set={setActiveTool} title="Eraser" />
         <ToolButton icon={<Droplet />} id="smudge" active={activeTool} set={setActiveTool} title="Smudge Canvas" />
         <ToolButton icon={<Type />} id="text" active={activeTool} set={setActiveTool} title="Text (Click on Canvas)" />
+        <ToolButton icon={<SlidersHorizontal />} id="blur" active={activeTool} set={setActiveTool} title="Apply Filter (Gaussian Blur)" />
         <ToolButton icon={<Crop />} id="crop" active={activeTool} set={setActiveTool} title="Clear Active Layer" />
 
         <div style={{ flex: 1 }} />
 
-        {/* Toolbar Color Input Wheel */}
         <div className="color-btn" style={{ marginBottom: '16px', backgroundColor: toolColor }}>
           <input type="color" value={toolColor} onChange={(e) => setToolColor(e.target.value)} />
         </div>
@@ -458,15 +580,17 @@ function App() {
         {/* Top Menu */}
         <motion.div className="top-menu" initial={{ y: -50 }} animate={{ y: 0 }}>
           <div className="logo-area">
-            Tweak<span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginLeft: 8 }}>v1.2.0</span>
+            Tweak<span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginLeft: 8 }}>v1.3.0</span>
           </div>
           <div className="top-right">
             <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>{activeFrameIndex + 1} / {frames.length}Frames</span>
-            <button className="styled-btn" onClick={() => alert("Project exported successfully locally.")}>Export ZIP</button>
+            <button className="styled-btn" onClick={exportProject} style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+              <Download size={14} /> Export ZIP
+            </button>
           </div>
         </motion.div>
 
-        {/* Canvas Area with the New Floating Left Toolbar */}
+        {/* Canvas Area */}
         <div
           className="canvas-area"
           onWheel={handleWheel}
@@ -485,8 +609,12 @@ function App() {
             <div style={{ color: 'var(--text-muted)', fontSize: '10px', fontWeight: 600, marginBottom: '-4px' }}>Opac</div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '16px' }}>
-              <button className="btn-icon"><Undo2 size={18} /></button>
-              <button className="btn-icon"><Redo2 size={18} /></button>
+              <button className="btn-icon" onClick={() => restoreHistory(historyIndex - 1)} disabled={historyIndex <= 0} style={{ opacity: historyIndex <= 0 ? 0.3 : 1 }}>
+                <Undo2 size={18} />
+              </button>
+              <button className="btn-icon" onClick={() => restoreHistory(historyIndex + 1)} disabled={historyIndex >= history.length - 1} style={{ opacity: historyIndex >= history.length - 1 ? 0.3 : 1 }}>
+                <Redo2 size={18} />
+              </button>
             </div>
           </div>
 
@@ -565,12 +693,6 @@ function App() {
               </div>
             )}
           </div>
-
-          {/* AI Notice Hovering */}
-          <div className="ai-panel">
-            <div className="ai-pulse"></div>
-            <span>AI MoCap Ready (Use Stylus & Momentum tracker)</span>
-          </div>
         </div>
 
         {/* Timeline / Flipbook */}
@@ -617,7 +739,7 @@ function App() {
           Layers Stack
           <button className="btn-icon" onClick={addNewLayer}><Plus size={18} /></button>
         </div>
-        <div className="layer-list">
+        <div className="layer-list" style={{ flex: 'none', height: '40%', overflowY: 'auto' }}>
           {layers.map((layer) => (
             <div
               key={layer.id}
@@ -633,15 +755,43 @@ function App() {
               >
                 {layer.visible ? <Eye size={16} /> : <EyeOff size={16} />}
               </button>
-              <span className="layer-name" style={{ paddingLeft: '8px' }}>{layer.name}</span>
+
+              <div style={{ display: 'flex', flexDirection: 'column', flex: 1, paddingLeft: '8px' }}>
+                <span className="layer-name">{layer.name}</span>
+                <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{layer.blendMode}</span>
+              </div>
+
+              <button
+                className={`btn-icon ${layer.alphaLock ? 'active-lock' : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setLayers(layers.map(l => l.id === layer.id ? { ...l, alphaLock: !l.alphaLock } : l));
+                }}
+                title="Alpha Lock"
+                style={{ color: layer.alphaLock ? 'var(--accent)' : 'var(--text-muted)' }}
+              >
+                {layer.alphaLock ? <Lock size={14} /> : <Unlock size={14} />}
+              </button>
+
               <button className="btn-icon" onClick={(e) => { e.stopPropagation(); removeLayer(layer.id); }}>
                 <Trash2 size={14} />
               </button>
             </div>
           ))}
         </div>
-        <div style={{ padding: '16px', borderTop: '1px solid var(--panel-border)' }}>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>Active Layer Opacity</div>
+        <div style={{ padding: '16px', borderTop: '1px solid var(--panel-border)', flex: 1, overflowY: 'auto' }}>
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600 }}>Blend Mode</div>
+          <select
+            style={{ width: '100%', padding: '8px', background: 'rgba(0,0,0,0.5)', color: 'white', border: '1px solid var(--panel-border)', borderRadius: '6px', marginBottom: '16px' }}
+            value={layers.find(l => l.id === activeLayerId)?.blendMode}
+            onChange={(e) => setLayers(layers.map(l => l.id === activeLayerId ? { ...l, blendMode: e.target.value } : l))}
+          >
+            {['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion', 'hue', 'saturation', 'color', 'luminosity'].map(m => (
+              <option key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</option>
+            ))}
+          </select>
+
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600 }}>Opacity</div>
           <div style={{ background: 'rgba(255,255,255,0.02)', padding: '12px', borderRadius: '8px', fontSize: '13px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
               <span>Value</span>
