@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import {
   MousePointer2, Brush, Eraser,
   Droplet, Play, Pause, ChevronRight,
-  ChevronLeft, Pencil, PenTool, Crop,
+  ChevronLeft, Pencil, Crop,
   Eye, EyeOff, Plus, Type, Trash2, Maximize, Undo2, Redo2
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
@@ -272,12 +272,6 @@ function App() {
 
     if (isPlaying) setIsPlaying(false);
 
-    if (activeTool === 'rig') {
-      alert(`${activeTool.toUpperCase()} tool is currently a UI mock feature.`);
-      setActiveTool('brush');
-      return;
-    }
-
     if (activeTool === 'crop') {
       const cvs = canvasRefs.current[activeLayerId];
       if (cvs) {
@@ -444,7 +438,6 @@ function App() {
         <ToolButton icon={<Pencil />} id="pencil" active={activeTool} set={setActiveTool} title="Pencil" />
         <ToolButton icon={<Eraser />} id="eraser" active={activeTool} set={setActiveTool} title="Eraser" />
         <ToolButton icon={<Droplet />} id="smudge" active={activeTool} set={setActiveTool} title="Smudge Canvas" />
-        <ToolButton icon={<PenTool />} id="rig" active={activeTool} set={setActiveTool} title="Rigging Tool (Mock)" />
         <ToolButton icon={<Type />} id="text" active={activeTool} set={setActiveTool} title="Text (Click on Canvas)" />
         <ToolButton icon={<Crop />} id="crop" active={activeTool} set={setActiveTool} title="Clear Active Layer" />
 
