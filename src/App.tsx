@@ -25,9 +25,9 @@ interface FrameData {
 function App() {
   const [activeTool, setActiveTool] = useState('brush');
   const [layers, setLayers] = useState<Layer[]>([
-    { id: 'layer-1', name: 'Background', visible: true, opacity: 100, blendMode: 'normal' },
+    { id: 'layer-3', name: 'Inks', visible: true, opacity: 100, blendMode: 'normal' },
     { id: 'layer-2', name: 'Sketch', visible: true, opacity: 50, blendMode: 'multiply' },
-    { id: 'layer-3', name: 'Inks', visible: true, opacity: 100, blendMode: 'normal' }
+    { id: 'layer-1', name: 'Background', visible: true, opacity: 100, blendMode: 'normal' }
   ]);
   const [activeLayerId, setActiveLayerId] = useState('layer-3');
 
@@ -190,6 +190,12 @@ function App() {
     if (isPlaying) setIsPlaying(false); // Stop playback on draw
 
     // Special click events
+    if (activeTool === 'magic' || activeTool === 'rig') {
+      alert(`${activeTool.toUpperCase()} tool is currently a UI mock feature.`);
+      setActiveTool('brush');
+      return;
+    }
+
     if (activeTool === 'crop') {
       const cvs = canvasRefs.current[activeLayerId];
       if (cvs) {
@@ -465,7 +471,7 @@ function App() {
                 className={`frame-item ${activeFrameIndex === i ? 'active' : ''}`}
                 onClick={() => switchFrame(i)}
               >
-                <div style={{ width: '100%', height: '100%', backgroundImage: `url(${f.layerImages[layers[layers.length - 2]?.id] || ''})`, backgroundSize: 'cover' }}></div>
+                <div style={{ width: '100%', height: '100%', backgroundImage: `url(${f.layerImages[layers[0]?.id] || ''})`, backgroundSize: 'cover' }}></div>
                 <span className="frame-number">{i + 1}</span>
               </div>
             ))}
