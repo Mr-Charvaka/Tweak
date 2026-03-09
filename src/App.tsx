@@ -530,6 +530,45 @@ function App() {
     if (activeLayerId === id) setActiveLayerId(layers[0].id);
   };
 
+  const deleteFrame = (index: number) => {
+    if (frames.length <= 1) return;
+
+    const newFrames = frames.filter((_, i) => i !== index);
+    setFrames(newFrames);
+
+    let newIndex = activeFrameIndex;
+    if (index === activeFrameIndex) {
+      newIndex = Math.max(0, index - 1);
+    } else if (index < activeFrameIndex) {
+      newIndex = activeFrameIndex - 1;
+    }
+
+    setActiveFrameIndex(newIndex);
+
+    const newFrame = newFrames[newIndex];
+    if (newFrame) {
+      layers.forEach(l => {
+        const cvs = canvasRefs.current[l.id];
+        if (cvs) {
+          const ctx = cvs.getContext('2d');
+          if (ctx) {
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+            const sourceUrl = newFrame.layerImages?.[l.id];
+
+            if (sourceUrl) {
+              const img = new Image();
+              img.onload = () => ctx.drawImage(img, 0, 0);
+              img.src = sourceUrl;
+            } else if (l.name === 'Background') {
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+            }
+          }
+        }
+      });
+    }
+  };
+
   // Full native ZIP Export implementation!
   const exportProject = async () => {
     const zip = new JSZip();
@@ -664,7 +703,8 @@ function App() {
                 style={{
                   position: 'absolute', top: 0, left: 0,
                   width: canvasWidth, height: canvasHeight,
-                  opacity: 0.35, pointerEvents: 'none', mixBlendMode: 'multiply'
+                  opacity: 0.35, pointerEvents: 'none', mixBlendMode: 'multiply',
+                  zIndex: 5
                 }}
               >
                 {[...layers].reverse().map(l => {
@@ -778,9 +818,20 @@ function App() {
                 key={f.id}
                 className={`frame-item ${activeFrameIndex === i ? 'active' : ''}`}
                 onClick={() => switchFrame(i)}
+                style={{ position: 'relative' }}
               >
                 <div style={{ width: '100%', height: '100%', backgroundImage: `url(${f.layerImages[layers[0]?.id] || ''})`, backgroundSize: 'cover' }}></div>
                 <span className="frame-number">{i + 1}</span>
+                {frames.length > 1 && activeFrameIndex === i && (
+                  <button
+                    className="btn-icon"
+                    style={{ position: 'absolute', top: '-6px', right: '-6px', background: 'var(--panel-bg)', borderRadius: '50%', padding: '2px', color: 'var(--accent)', border: '1px solid var(--panel-border)' }}
+                    onClick={(e) => { e.stopPropagation(); deleteFrame(i); }}
+                    title="Delete Frame"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
