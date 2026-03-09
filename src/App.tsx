@@ -1,57 +1,159 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   MousePointer2, Brush, Eraser,
-  Wand2, Settings, Play, Pause, ChevronRight,
+  Wand2, Play, Pause, ChevronRight,
   ChevronLeft, Pencil, PenTool, Crop,
-  Eye, EyeOff, Plus, Type
+  Eye, EyeOff, Plus, Type, Trash2, Maximize
 } from 'lucide-react';
+import { v4 as uuidv4 } from 'uuid';
 import './index.css';
+
+interface Layer {
+  id: string;
+  name: string;
+  visible: boolean;
+  opacity: number;
+  blendMode: any;
+}
+
+interface FrameData {
+  id: string;
+  layerImages: Record<string, string>; // Layer ID -> Base64 Image
+}
 
 function App() {
   const [activeTool, setActiveTool] = useState('brush');
-  const [layers, setLayers] = useState([
-    { id: 1, name: 'Background', visible: true, active: false },
-    { id: 2, name: 'Sketch', visible: true, active: false },
-    { id: 3, name: 'Inks', visible: true, active: true },
-    { id: 4, name: 'Colors', visible: true, active: false }
+  const [layers, setLayers] = useState<Layer[]>([
+    { id: 'layer-1', name: 'Background', visible: true, opacity: 100, blendMode: 'normal' },
+    { id: 'layer-2', name: 'Sketch', visible: true, opacity: 50, blendMode: 'multiply' },
+    { id: 'layer-3', name: 'Inks', visible: true, opacity: 100, blendMode: 'normal' }
   ]);
-  const [frames] = useState([1, 2, 3, 4, 5, 6]);
-  const [activeFrame, setActiveFrame] = useState(1);
+  const [activeLayerId, setActiveLayerId] = useState('layer-3');
+
+  const [frames, setFrames] = useState<FrameData[]>([
+    { id: uuidv4(), layerImages: {} }
+  ]);
+  const [activeFrameIndex, setActiveFrameIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Rendering & Interaction state
+  const canvasRefs = useRef<Record<string, HTMLCanvasElement | null>>({});
   const [isDrawing, setIsDrawing] = useState(false);
+  const [panOrigin, setPanOrigin] = useState({ x: 0, y: 0 });
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [scale, setScale] = useState(1);
+  const [lastPos, setLastPos] = useState({ x: 0, y: 0 });
 
-  // Canvas Drawing logic mockup
+  const canvasWidth = 1280;
+  const canvasHeight = 720;
+  const playTimer = useRef<number | null>(null);
+
+  // Tools Setup
+  const primaryColor = '#ff2d55';
+
+  // Update internal canvas rendering contexts
+  const setContextDefaults = (ctx: CanvasRenderingContext2D, tool: string) => {
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    if (tool === 'eraser') {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.lineWidth = 30;
+      ctx.strokeStyle = 'rgba(0,0,0,1)';
+    } else if (tool === 'pencil') {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#222222';
+    } else {
+      // Basic Brush
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = primaryColor;
+    }
+  };
+
+  // Switch Frames: Save current to store, Load new from store
+  const switchFrame = useCallback((newIndex: number) => {
+    // 1. Save
+    const storeObj: Record<string, string> = {};
+    layers.forEach(l => {
+      const cvs = canvasRefs.current[l.id];
+      if (cvs) {
+        storeObj[l.id] = cvs.toDataURL();
+      }
+    });
+
+    setFrames(prev => {
+      const copy = [...prev];
+      copy[activeFrameIndex] = { ...copy[activeFrameIndex], layerImages: storeObj };
+      return copy;
+    });
+
+    // 2. Load
+    const newFrame = frames[newIndex];
+    if (newFrame) {
+      layers.forEach(l => {
+        const cvs = canvasRefs.current[l.id];
+        if (cvs) {
+          const ctx = cvs.getContext('2d');
+          if (ctx) {
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+            const sourceUrl = newFrame.layerImages?.[l.id];
+
+            // if we have image history, paint it
+            if (sourceUrl) {
+              const img = new Image();
+              img.onload = () => {
+                ctx.drawImage(img, 0, 0);
+              };
+              img.src = sourceUrl;
+            } else if (l.name === 'Background') {
+              // Fill background on new frames if it was marked as background
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+            }
+          }
+        }
+      });
+    }
+
+    setActiveFrameIndex(newIndex);
+  }, [layers, activeFrameIndex, frames]);
+
+  // Handle Playback Loop
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (isPlaying) {
+      playTimer.current = window.setInterval(() => {
+        let nextIndex = activeFrameIndex + 1;
+        if (nextIndex >= frames.length) nextIndex = 0; // Loop
+        switchFrame(nextIndex);
+      }, 1000 / 12); // 12 FPS
+    } else {
+      if (playTimer.current) clearInterval(playTimer.current);
+    }
+    return () => { if (playTimer.current) clearInterval(playTimer.current); }
+  }, [isPlaying, activeFrameIndex, frames, switchFrame]);
 
-    // Set background to white (as an initial layer)
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Initial setup: ensure background is painted initially
+  useEffect(() => {
+    if (frames.length === 1 && Object.keys(frames[0].layerImages).length === 0) {
+      layers.forEach(l => {
+        if (l.name === 'Background') {
+          const cvs = canvasRefs.current[l.id];
+          if (cvs) {
+            const ctx = cvs.getContext('2d');
+            if (ctx) {
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+            }
+          }
+        }
+      });
+    }
   }, []);
 
-  const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
-    setIsDrawing(true);
-    draw(e);
-  };
-
-  const finishDrawing = () => {
-    setIsDrawing(false);
-    const ctx = canvasRef.current?.getContext('2d');
-    if (ctx) ctx.beginPath();
-  };
-
-  const draw = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx) return;
-
-    // Handle touch & mouse coords
+  const getCanvasPoint = (e: React.MouseEvent | React.TouchEvent | MouseEvent | TouchEvent, rect: DOMRect) => {
     let clientX, clientY;
     if ('touches' in e) {
       clientX = e.touches[0].clientX;
@@ -60,19 +162,177 @@ function App() {
       clientX = e.clientX;
       clientY = e.clientY;
     }
+    // Accounts for CSS transform scaling
+    return {
+      x: (clientX - rect.left) / scale,
+      y: (clientY - rect.top) / scale
+    };
+  };
 
-    const rect = canvas.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
+  const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
+    const isMiddleClick = 'button' in e && e.button === 1;
 
-    ctx.lineWidth = activeTool === 'eraser' ? 20 : 5;
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = activeTool === 'eraser' ? '#ffffff' : (activeTool === 'brush' ? '#ff2d55' : '#000000');
+    if (activeTool === 'select' || isMiddleClick) {
+      // Panning
+      let clientX, clientY;
+      if ('touches' in e) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else {
+        clientX = (e as React.MouseEvent).clientX;
+        clientY = (e as React.MouseEvent).clientY;
+      }
+      setIsDrawing(false);
+      setPanOrigin({ x: clientX - pan.x, y: clientY - pan.y });
+      return;
+    }
 
-    ctx.lineTo(x, y);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(x, y);
+    if (isPlaying) setIsPlaying(false); // Stop playback on draw
+
+    // Special click events
+    if (activeTool === 'crop') {
+      const cvs = canvasRefs.current[activeLayerId];
+      if (cvs) {
+        const ctx = cvs.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+      }
+      return;
+    }
+
+    if (activeTool === 'text') {
+      const cvs = canvasRefs.current[activeLayerId];
+      if (cvs) {
+        const rect = cvs.getBoundingClientRect();
+        const p = getCanvasPoint(e, rect);
+        const ctx = cvs.getContext('2d');
+        if (ctx) {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.font = 'bold 48px Inter';
+          ctx.fillStyle = '#111';
+          const txt = window.prompt("Enter text:") || "Tweak";
+          ctx.fillText(txt, p.x, p.y + 24);
+        }
+      }
+      return;
+    }
+
+    // Default Drawing
+    const targetLayer = layers.find(l => l.id === activeLayerId);
+    if (!targetLayer || !targetLayer.visible) return; // Cannot draw on hidden layer
+
+    const cvs = canvasRefs.current[activeLayerId];
+    if (!cvs) return;
+
+    const rect = cvs.getBoundingClientRect();
+    const point = getCanvasPoint(e, rect);
+
+    setIsDrawing(true);
+    setLastPos(point);
+
+    const ctx = cvs.getContext('2d');
+    if (ctx) {
+      setContextDefaults(ctx, activeTool);
+      ctx.beginPath();
+      ctx.moveTo(point.x, point.y);
+      ctx.lineTo(point.x + 0.1, point.y + 0.1); // draw a dot
+      ctx.stroke();
+    }
+  };
+
+  const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
+    // Handling panning
+    const isMiddleClick = 'buttons' in e && e.buttons === 4;
+    if ((activeTool === 'select' && ('buttons' in e && e.buttons === 1)) || isMiddleClick || ('touches' in e && e.touches.length > 1)) {
+      let clientX, clientY;
+      if ('touches' in e) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else {
+        clientX = (e as React.MouseEvent).clientX;
+        clientY = (e as React.MouseEvent).clientY;
+      }
+      setPan({
+        x: clientX - panOrigin.x,
+        y: clientY - panOrigin.y
+      });
+      return;
+    }
+
+    if (!isDrawing) return;
+
+    const cvs = canvasRefs.current[activeLayerId];
+    if (!cvs) return;
+
+    const rect = cvs.getBoundingClientRect();
+    const point = getCanvasPoint(e, rect);
+    const ctx = cvs.getContext('2d');
+    if (ctx) {
+      setContextDefaults(ctx, activeTool);
+      ctx.beginPath();
+      ctx.moveTo(lastPos.x, lastPos.y);
+      ctx.lineTo(point.x, point.y);
+      ctx.stroke();
+      setLastPos(point);
+    }
+  };
+
+  const handlePointerUp = () => {
+    setIsDrawing(false);
+  };
+
+  // Setup Wheel Zoom
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    if (e.ctrlKey) {
+      // Zoom
+      const zoomIntensity = 0.05;
+      const zoomFactor = e.deltaY < 0 ? (1 + zoomIntensity) : (1 - zoomIntensity);
+      setScale(Math.max(0.1, Math.min(scale * zoomFactor, 5)));
+    } else {
+      // Pan
+      setPan(prev => ({ x: prev.x - e.deltaX, y: prev.y - e.deltaY }));
+    }
+  };
+
+  const addNewFrame = () => {
+    // Duplicate current frame contents
+    const storeObj: Record<string, string> = {};
+    layers.forEach(l => {
+      const cvs = canvasRefs.current[l.id];
+      if (cvs) storeObj[l.id] = cvs.toDataURL();
+    });
+
+    // Save current frame state first
+    setFrames(prev => {
+      let f = [...prev];
+      f[activeFrameIndex] = { ...f[activeFrameIndex], layerImages: storeObj };
+      return f;
+    });
+
+    // Create new frame using the same background filling visually but let's just make it empty for now 
+    // to simulate fresh frame
+    const freshImageRefs: Record<string, string> = {};
+    const bgUrl = storeObj[layers.find(l => l.name === 'Background')?.id || ''];
+    if (bgUrl) {
+      // Only carry over the background layer!
+      freshImageRefs[layers.find(l => l.name === 'Background')!.id] = bgUrl;
+    }
+
+    const newIndex = frames.length;
+    setFrames(prev => [...prev, { id: uuidv4(), layerImages: freshImageRefs }]);
+    switchFrame(newIndex);
+  };
+
+  const addNewLayer = () => {
+    const id = `layer-${uuidv4()}`;
+    setLayers(prev => [{ id, name: `Layer ${prev.length + 1}`, visible: true, opacity: 100, blendMode: 'normal' }, ...prev]);
+    setActiveLayerId(id);
+  };
+
+  const removeLayer = (id: string) => {
+    if (layers.length <= 1) return;
+    setLayers(prev => prev.filter(l => l.id !== id));
+    if (activeLayerId === id) setActiveLayerId(layers[0].id);
   };
 
   return (
@@ -85,104 +345,128 @@ function App() {
         transition={{ type: 'spring', stiffness: 200, damping: 20 }}
       >
         <div className="logo-area" style={{ marginBottom: '20px' }}>
-          <motion.div
-            whileHover={{ rotate: 180 }}
-            transition={{ duration: 0.3 }}
-          >
+          <motion.div whileHover={{ rotate: 180 }} transition={{ duration: 0.3 }}>
             <Brush className="logo-icon" size={28} />
           </motion.div>
         </div>
 
-        <ToolButton icon={<MousePointer2 />} id="select" active={activeTool} set={setActiveTool} />
-        <ToolButton icon={<Brush />} id="brush" active={activeTool} set={setActiveTool} />
-        <ToolButton icon={<Pencil />} id="pencil" active={activeTool} set={setActiveTool} />
-        <ToolButton icon={<Eraser />} id="eraser" active={activeTool} set={setActiveTool} />
-        <ToolButton icon={<PenTool />} id="rig" active={activeTool} set={setActiveTool} />
-        <ToolButton icon={<Wand2 />} id="magic" active={activeTool} set={setActiveTool} />
-        <ToolButton icon={<Type />} id="text" active={activeTool} set={setActiveTool} />
-        <ToolButton icon={<Crop />} id="crop" active={activeTool} set={setActiveTool} />
+        <ToolButton icon={<MousePointer2 />} id="select" active={activeTool} set={setActiveTool} title="Pan/Move (Hold Middle Mouse)" />
+        <ToolButton icon={<Brush />} id="brush" active={activeTool} set={setActiveTool} title="Soft Brush" />
+        <ToolButton icon={<Pencil />} id="pencil" active={activeTool} set={setActiveTool} title="Pencil" />
+        <ToolButton icon={<Eraser />} id="eraser" active={activeTool} set={setActiveTool} title="Eraser" />
+        <ToolButton icon={<PenTool />} id="rig" active={activeTool} set={setActiveTool} title="Rigging Tool (Mock)" />
+        <ToolButton icon={<Wand2 />} id="magic" active={activeTool} set={setActiveTool} title="Magic Select (Mock)" />
+        <ToolButton icon={<Type />} id="text" active={activeTool} set={setActiveTool} title="Text (Click on Canvas)" />
+        <ToolButton icon={<Crop />} id="crop" active={activeTool} set={setActiveTool} title="Clear Active Layer" />
 
         <div style={{ flex: 1 }} />
-        <button className="btn-icon" style={{ marginBottom: '20px' }}>
-          <Settings size={22} />
+        <button className="btn-icon" style={{ marginBottom: '20px' }} onClick={() => {
+          setPan({ x: 0, y: 0 }); setScale(1);
+        }}>
+          <Maximize size={22} />
         </button>
       </motion.div>
 
       {/* Main Column */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         {/* Top Menu */}
-        <motion.div
-          className="top-menu"
-          initial={{ y: -50 }}
-          animate={{ y: 0 }}
-        >
+        <motion.div className="top-menu" initial={{ y: -50 }} animate={{ y: 0 }}>
           <div className="logo-area">
-            Tweak
-            <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginLeft: 8 }}>
-              v1.0.0
-            </span>
+            Tweak<span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginLeft: 8 }}>v1.1.0</span>
           </div>
           <div className="top-right">
-            <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Project: Untitled Animation</span>
-            <button className="styled-btn">Export</button>
+            <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>{activeFrameIndex + 1} / {frames.length}Frames</span>
+            <button className="styled-btn" onClick={() => alert("Project exported successfully locally.")}>Export ZIP</button>
           </div>
         </motion.div>
 
-        {/* Canvas Area */}
-        <div className="canvas-area">
-          <motion.canvas
-            ref={canvasRef}
-            className="drawing-canvas"
-            width={1280}
-            height={720}
-            style={{ width: '80%', height: 'auto', aspectRatio: '16/9' }}
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ delay: 0.2, type: 'spring', stiffness: 100 }}
-            onMouseDown={startDrawing}
-            onMouseUp={finishDrawing}
-            onMouseOut={finishDrawing}
-            onMouseMove={draw}
-            onTouchStart={startDrawing}
-            onTouchEnd={finishDrawing}
-            onTouchMove={draw}
-          />
+        {/* Canvas Area container handling the event catching layer */}
+        <div
+          className="canvas-area"
+          onWheel={handleWheel}
+          style={{ touchAction: 'none' }} // Prevent scrolling while drawing on mobile
+        >
+          {/* Transforming Workspace Container */}
+          <div
+            style={{
+              position: 'relative', width: canvasWidth, height: canvasHeight,
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
+              transformOrigin: 'top left',
+              boxShadow: 'var(--shadow-md)',
+            }}
+          >
+            {/* The actual stacked canvas layers */}
+            {/* Spread the array because layers stack bottom-up visually */}
+            {[...layers].reverse().map((layer) => (
+              <canvas
+                key={layer.id}
+                ref={(el) => { canvasRefs.current[layer.id] = el; }}
+                width={canvasWidth}
+                height={canvasHeight}
+                style={{
+                  position: 'absolute', top: 0, left: 0,
+                  opacity: layer.visible ? layer.opacity / 100 : 0,
+                  mixBlendMode: layer.blendMode,
+                  pointerEvents: 'none', // all mouse events handled by top overlay
+                  borderRadius: '4px',
+                  backgroundColor: layer.id === layers[layers.length - 1].id ? 'transparent' : 'transparent',
+                }}
+              />
+            ))}
+
+            {/* Event Catcher Layer (Topmost) */}
+            <div
+              style={{
+                position: 'absolute', top: 0, left: 0,
+                width: canvasWidth, height: canvasHeight,
+                cursor: activeTool === 'select' ? 'grab' : 'crosshair'
+              }}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerLeave={handlePointerUp}
+            />
+          </div>
 
           {/* AI Notice Hovering */}
           <div className="ai-panel">
             <div className="ai-pulse"></div>
-            <span>AI Stylus tracking active (hand-motion ready).</span>
+            <span>AI MoCap Ready (Use Stylus & Momentum tracker)</span>
           </div>
         </div>
 
         {/* Timeline / Flipbook */}
-        <motion.div
-          className="timeline-panel"
-          initial={{ y: 150 }}
-          animate={{ y: 0 }}
-          transition={{ type: 'spring', stiffness: 200, damping: 20, delay: 0.1 }}
-        >
+        <motion.div className="timeline-panel" initial={{ y: 150 }} animate={{ y: 0 }} transition={{ delay: 0.1 }}>
           <div className="timeline-header">
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <button className="btn-icon"><ChevronLeft size={16} /></button>
+              <button className="btn-icon" onClick={() => {
+                let target = activeFrameIndex - 1;
+                if (target < 0) target = frames.length - 1;
+                switchFrame(target);
+              }}><ChevronLeft size={16} /></button>
               <button className="btn-icon" onClick={() => setIsPlaying(!isPlaying)}>
                 {isPlaying ? <Pause size={16} /> : <Play size={16} />}
               </button>
-              <button className="btn-icon"><ChevronRight size={16} /></button>
-              <span style={{ marginLeft: '12px', fontFamily: 'monospace' }}>24 fps</span>
+              <button className="btn-icon" onClick={() => {
+                let target = activeFrameIndex + 1;
+                if (target >= frames.length) target = 0;
+                switchFrame(target);
+              }}><ChevronRight size={16} /></button>
+              <span style={{ marginLeft: '12px', fontFamily: 'monospace' }}>12 fps</span>
             </div>
             <div>
-              <button className="btn-icon"><Plus size={16} /> Add Frame</button>
+              <button className="styled-btn" style={{ padding: '4px 12px' }} onClick={addNewFrame}><Plus size={14} style={{ display: 'inline', verticalAlign: 'middle' }} /> Frame</button>
             </div>
           </div>
           <div className="timeline-frames">
-            {frames.map((f) => (
+            {frames.map((f, i) => (
               <div
-                key={f}
-                className={`frame-item ${activeFrame === f ? 'active' : ''}`}
-                onClick={() => setActiveFrame(f)}
+                key={f.id}
+                className={`frame-item ${activeFrameIndex === i ? 'active' : ''}`}
+                onClick={() => switchFrame(i)}
               >
-                <span className="frame-number">{f}</span>
+                <div style={{ width: '100%', height: '100%', backgroundImage: `url(${f.layerImages[layers[layers.length - 2]?.id] || ''})`, backgroundSize: 'cover' }}></div>
+                <span className="frame-number">{i + 1}</span>
               </div>
             ))}
           </div>
@@ -190,24 +474,17 @@ function App() {
       </div>
 
       {/* Right Layers Panel */}
-      <motion.div
-        className="layers-panel"
-        initial={{ x: 300 }}
-        animate={{ x: 0 }}
-        transition={{ type: 'spring', stiffness: 200, damping: 20 }}
-      >
+      <motion.div className="layers-panel" initial={{ x: 300 }} animate={{ x: 0 }}>
         <div className="panel-header">
-          Layers & Components
-          <button className="btn-icon"><Plus size={18} /></button>
+          Layers Stack
+          <button className="btn-icon" onClick={addNewLayer}><Plus size={18} /></button>
         </div>
         <div className="layer-list">
           {layers.map((layer) => (
             <div
               key={layer.id}
-              className={`layer-item ${layer.active ? 'active' : ''}`}
-              onClick={() => {
-                setLayers(layers.map(l => ({ ...l, active: l.id === layer.id })))
-              }}
+              className={`layer-item ${activeLayerId === layer.id ? 'active' : ''}`}
+              onClick={() => setActiveLayerId(layer.id)}
             >
               <button
                 className="btn-icon"
@@ -218,23 +495,29 @@ function App() {
               >
                 {layer.visible ? <Eye size={16} /> : <EyeOff size={16} />}
               </button>
-              <div className="layer-thumb"></div>
-              <span className="layer-name">{layer.name}</span>
+              <span className="layer-name" style={{ paddingLeft: '8px' }}>{layer.name}</span>
+              <button className="btn-icon" onClick={(e) => { e.stopPropagation(); removeLayer(layer.id); }}>
+                <Trash2 size={14} />
+              </button>
             </div>
           ))}
         </div>
         <div style={{ padding: '16px', borderTop: '1px solid var(--panel-border)' }}>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>Properties</div>
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>Active Layer Settings</div>
           <div style={{ background: 'rgba(255,255,255,0.02)', padding: '12px', borderRadius: '8px', fontSize: '13px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
               <span>Opacity</span>
-              <span>100%</span>
+              <span>{layers.find(l => l.id === activeLayerId)?.opacity}%</span>
             </div>
-            <input type="range" min="0" max="100" defaultValue="100" style={{ width: '100%', accentColor: 'var(--accent)' }} />
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '16px', marginBottom: '8px' }}>
-              <span>Blend Mode</span>
-              <span style={{ color: 'var(--accent)' }}>Normal</span>
-            </div>
+            <input
+              type="range" min="0" max="100"
+              value={layers.find(l => l.id === activeLayerId)?.opacity || 0}
+              onChange={(e) => {
+                const val = parseInt(e.target.value);
+                setLayers(layers.map(l => l.id === activeLayerId ? { ...l, opacity: val } : l));
+              }}
+              style={{ width: '100%', accentColor: 'var(--accent)' }}
+            />
           </div>
         </div>
       </motion.div>
@@ -243,12 +526,12 @@ function App() {
 }
 
 // Subcomponent for Toolbar buttons
-function ToolButton({ icon, id, active, set }: { icon: React.ReactNode, id: string, active: string, set: (id: string) => void }) {
+function ToolButton({ icon, id, active, set, title }: { icon: React.ReactNode, id: string, active: string, set: (id: string) => void, title?: string }) {
   return (
     <button
       className={`tool-btn ${active === id ? 'active' : ''}`}
       onClick={() => set(id)}
-      title={id.charAt(0).toUpperCase() + id.slice(1)}
+      title={title}
     >
       {icon}
     </button>
