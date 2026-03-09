@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   MousePointer2, Brush, Eraser,
-  Wand2, Play, Pause, ChevronRight,
+  Droplet, Play, Pause, ChevronRight,
   ChevronLeft, Pencil, PenTool, Crop,
   Eye, EyeOff, Plus, Type, Trash2, Maximize
 } from 'lucide-react';
@@ -183,7 +183,7 @@ function App() {
         ctx.font = `bold ${textInput.fontSize}px Inter`;
         ctx.fillStyle = primaryColor;
         ctx.textBaseline = 'top';
-        ctx.fillText(textInput.value, textInput.x + 2, textInput.y + 2); // slight padding adjustment
+        ctx.fillText(textInput.value, textInput.x + 2, textInput.y + 2);
       }
     }
     setTextInput(null);
@@ -214,7 +214,7 @@ function App() {
     if (isPlaying) setIsPlaying(false); // Stop playback on draw
 
     // Special click events
-    if (activeTool === 'magic' || activeTool === 'rig') {
+    if (activeTool === 'rig') {
       alert(`${activeTool.toUpperCase()} tool is currently a UI mock feature.`);
       setActiveTool('brush');
       return;
@@ -242,7 +242,7 @@ function App() {
       return;
     }
 
-    // Default Drawing
+    // Default Drawing (Brush, Pencil, Eraser)
     const targetLayer = layers.find(l => l.id === activeLayerId);
     if (!targetLayer || !targetLayer.visible) return; // Cannot draw on hidden layer
 
@@ -254,6 +254,9 @@ function App() {
 
     setIsDrawing(true);
     setLastPos(point);
+
+    // For smudge, we don't draw an initial dot, as we need motion
+    if (activeTool === 'smudge') return;
 
     const ctx = cvs.getContext('2d');
     if (ctx) {
@@ -292,12 +295,28 @@ function App() {
     const rect = cvs.getBoundingClientRect();
     const point = getCanvasPoint(e, rect);
     const ctx = cvs.getContext('2d');
+
     if (ctx) {
-      setContextDefaults(ctx, activeTool);
-      ctx.beginPath();
-      ctx.moveTo(lastPos.x, lastPos.y);
-      ctx.lineTo(point.x, point.y);
-      ctx.stroke();
+      if (activeTool === 'smudge') {
+        const radius = 25; // Smudge radius
+        // Draw previous canvas pixel block onto current position at low opacity
+        ctx.globalAlpha = 0.3;
+        ctx.globalCompositeOperation = 'source-over';
+
+        ctx.drawImage(
+          cvs,
+          lastPos.x - radius, lastPos.y - radius, radius * 2, radius * 2,
+          point.x - radius, point.y - radius, radius * 2, radius * 2
+        );
+
+        ctx.globalAlpha = 1.0;
+      } else {
+        setContextDefaults(ctx, activeTool);
+        ctx.beginPath();
+        ctx.moveTo(lastPos.x, lastPos.y);
+        ctx.lineTo(point.x, point.y);
+        ctx.stroke();
+      }
       setLastPos(point);
     }
   };
@@ -380,8 +399,8 @@ function App() {
         <ToolButton icon={<Brush />} id="brush" active={activeTool} set={setActiveTool} title="Soft Brush" />
         <ToolButton icon={<Pencil />} id="pencil" active={activeTool} set={setActiveTool} title="Pencil" />
         <ToolButton icon={<Eraser />} id="eraser" active={activeTool} set={setActiveTool} title="Eraser" />
+        <ToolButton icon={<Droplet />} id="smudge" active={activeTool} set={setActiveTool} title="Smudge Canvas" />
         <ToolButton icon={<PenTool />} id="rig" active={activeTool} set={setActiveTool} title="Rigging Tool (Mock)" />
-        <ToolButton icon={<Wand2 />} id="magic" active={activeTool} set={setActiveTool} title="Magic Select (Mock)" />
         <ToolButton icon={<Type />} id="text" active={activeTool} set={setActiveTool} title="Text (Click on Canvas)" />
         <ToolButton icon={<Crop />} id="crop" active={activeTool} set={setActiveTool} title="Clear Active Layer" />
 
