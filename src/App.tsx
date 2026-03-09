@@ -36,6 +36,7 @@ function App() {
   ]);
   const [activeFrameIndex, setActiveFrameIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [textInput, setTextInput] = useState<{ x: number, y: number, value: string, fontSize: number } | null>(null);
 
   // Rendering & Interaction state
   const canvasRefs = useRef<Record<string, HTMLCanvasElement | null>>({});
@@ -169,8 +170,31 @@ function App() {
     };
   };
 
+  const stampText = () => {
+    if (!textInput || !textInput.value.trim()) {
+      setTextInput(null);
+      return;
+    }
+    const cvs = canvasRefs.current[activeLayerId];
+    if (cvs) {
+      const ctx = cvs.getContext('2d');
+      if (ctx) {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.font = `bold ${textInput.fontSize}px Inter`;
+        ctx.fillStyle = primaryColor;
+        ctx.textBaseline = 'top';
+        ctx.fillText(textInput.value, textInput.x + 2, textInput.y + 2); // slight padding adjustment
+      }
+    }
+    setTextInput(null);
+  };
+
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
     const isMiddleClick = 'button' in e && e.button === 1;
+
+    if (textInput && activeTool !== 'text') {
+      stampText();
+    }
 
     if (activeTool === 'select' || isMiddleClick) {
       // Panning
@@ -206,18 +230,14 @@ function App() {
     }
 
     if (activeTool === 'text') {
+      if (textInput) {
+        stampText();
+      }
       const cvs = canvasRefs.current[activeLayerId];
       if (cvs) {
         const rect = cvs.getBoundingClientRect();
         const p = getCanvasPoint(e, rect);
-        const ctx = cvs.getContext('2d');
-        if (ctx) {
-          ctx.globalCompositeOperation = 'source-over';
-          ctx.font = 'bold 48px Inter';
-          ctx.fillStyle = '#111';
-          const txt = window.prompt("Enter text:") || "Tweak";
-          ctx.fillText(txt, p.x, p.y + 24);
-        }
+        setTextInput({ x: p.x, y: p.y, value: '', fontSize: 48 });
       }
       return;
     }
@@ -425,13 +445,48 @@ function App() {
               style={{
                 position: 'absolute', top: 0, left: 0,
                 width: canvasWidth, height: canvasHeight,
-                cursor: activeTool === 'select' ? 'grab' : 'crosshair'
+                cursor: activeTool === 'select' ? 'grab' : (activeTool === 'text' ? 'text' : 'crosshair')
               }}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
               onPointerLeave={handlePointerUp}
             />
+
+            {textInput && (
+              <div
+                style={{ position: 'absolute', top: textInput.y, left: textInput.x, display: 'flex', flexDirection: 'column', zIndex: 100 }}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <input
+                  autoFocus
+                  value={textInput.value}
+                  onChange={(e) => setTextInput({ ...textInput, value: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') stampText();
+                    if (e.key === 'Escape') setTextInput(null);
+                  }}
+                  placeholder="Type here..."
+                  style={{
+                    background: 'transparent',
+                    border: '1px dashed var(--accent)',
+                    color: primaryColor,
+                    font: `bold ${textInput.fontSize}px Inter`,
+                    outline: 'none',
+                    padding: '0 2px',
+                    margin: 0,
+                    minWidth: '150px'
+                  }}
+                />
+                <div style={{ display: 'flex', gap: '8px', marginTop: '8px', background: 'var(--panel-bg)', padding: '6px', borderRadius: '8px', border: '1px solid var(--panel-border)', width: 'fit-content' }}>
+                  <button className="btn-icon" onClick={() => setTextInput({ ...textInput, fontSize: Math.max(12, textInput.fontSize - 4) })}>-</button>
+                  <span style={{ color: 'white', display: 'flex', alignItems: 'center', fontSize: '13px', fontWeight: 600, minWidth: '40px', justifyContent: 'center' }}>{textInput.fontSize}px</span>
+                  <button className="btn-icon" onClick={() => setTextInput({ ...textInput, fontSize: textInput.fontSize + 4 })}>+</button>
+                  <div style={{ width: '1px', background: 'var(--panel-border)', margin: '0 4px' }} />
+                  <button className="styled-btn" style={{ padding: '4px 12px', fontSize: '12px' }} onClick={stampText}>Apply</button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* AI Notice Hovering */}
